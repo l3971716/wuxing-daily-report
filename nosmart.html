@@ -659,6 +659,23 @@ header,.energy,.note,section.zone,footer{padding-left:16px;padding-right:16px}}
 
 
 
+<section class="bt" id="evo-sec">
+  <div class="bt-head"><h2>🧬 样本进化层（真实回测反馈）</h2>
+    <div class="zone-meta" id="evo-meta">正在读取已结算样本…</div></div>
+  <div class="calib-note">
+    把你在<b>当前浏览器</b>里积累的真实回测样本（预测 vs 实际）反馈进模型：
+    若某个标的长期预测偏高/偏低，进化层会把该偏差<b>反向修正</b>到收盘预测上。
+    样本越多、方向命中越稳，修正越可信；样本不足时不强改。
+    <span class="calib-warn">样本进化只做幅度修正，不改变五行推演方向，仍不构成投资建议。</span>
+  </div>
+  <div class="table-scroll"><table class="bt-table">
+    <tr><th>标的</th><th class="num">已结算样本</th><th class="num">方向命中</th>
+        <th class="num">进化修正</th></tr>
+    <tbody id="evo-rows"></tbody>
+  </table></div>
+  <div class="calib-sub">修正量 = 反向的系统性偏差（-3% ~ +3% 封顶）。用「样本迁移」从手机导入历史样本，进化会更早生效。</div>
+</section>
+
 <section class="bt">
   <div class="bt-head"><h2>📊 预测回测记录</h2>
     <div class="zone-meta">每次生成自动记账 · 下次更新行情时自动回填实际值</div></div>
@@ -1125,6 +1142,15 @@ function drawSVG(sym, zoneKey, gz, dayMaster){
 
   /* 收盘预测框尺寸（先算，供最弱/最强避让、星标与收盘标注复用） */
   var endPct = pct[pct.length-1], endPr = pr[pr.length-1];
+  /* 样本进化层：用真实回测样本修正收盘预测（样本≥3 且命中稳定时启用） */
+  var _evoFused = evoApply(sym, endPct);
+  if (_evoFused !== endPct && isFinite(_evoFused)){
+    var _evoAdj = _evoFused - endPct;
+    endPct = _evoFused;
+    var _evoDelta = base * (1 + endPct/100) - endPr;
+    for (var _ek=iNow;_ek<pr.length;_ek++) pr[_ek] += _evoDelta;
+    endPr = pr[pr.length-1];
+  }
   var bw = IS_MOBILE ? 250 : 190, bh = IS_MOBILE ? 50 : 34;
   var bx = Math.min(X(24)-bw, W-MR-bw), by = Y(endPr) - (IS_MOBILE ? 50 : 34);
   /* F8 星标位置（提前算，供最弱/最强避让） */
@@ -2168,6 +2194,73 @@ function settleSamples(){
     });
     if (changed) btSave(d);
     renderBacktest();
+    try { evoRefresh(); } catch(e){}   /* 样本变化 → 进化层即时更新 */
+  } catch(e){}
+}
+/* ========== 样本进化层（EVO）：用真实回测样本持续修正预测 ==========
+ * 每次打开页面自动记录当天预测（pred），次日联网回填实际涨跌（act）。
+ * 真实样本反映「当前模型在该浏览器的系统性偏差」，随样本持续积累，
+ * EVO 按标的估计偏差并反向修正到五行收盘预测上——样本越多修正越可信。 */
+var EVO = {}, EVO_SHOWN = false;
+
+function evoBiasOf(sym){
+  try {
+    var d = btLoad(), recs = [];
+    d.records.forEach(function(r){
+      if (r.sym === sym && r.p1 != null && isFinite(r.act) && isFinite(r.pred)) recs.push(r);
+    });
+    if (recs.length < 3) return {bias: 0, n: recs.length, hit: 0.5};
+    var sum = 0, hitN = 0;
+    recs.forEach(function(r){
+      sum += (r.pred - r.act);
+      if ((r.act > 0) === (r.pred > 0)) hitN++;
+    });
+    var bias = sum / recs.length;
+    var hit = hitN / recs.length;
+    var shrink = Math.min(0.6, 0.2 + recs.length * 0.02);
+    var adj = Math.max(-3, Math.min(3, -bias * shrink));
+    return {bias: bias, n: recs.length, hit: hit, adj: adj, on: true};
+  } catch(e){ return {bias: 0, n: 0, hit: 0.5, adj: 0, on: false}; }
+}
+
+function evoRefresh(){
+  SYMS.forEach(function(s){ EVO[s] = evoBiasOf(s); });
+  EVO_SHOWN = true;
+  if (typeof renderEvo === 'function') renderEvo();
+}
+
+function evoApply(sym, fusedPct){
+  var e = EVO[sym];
+  if (!e || !e.on) return fusedPct;
+  if (e.n < 3 || e.hit < 0.4) return fusedPct;   /* 样本少/命中差：不改 */
+  var out = fusedPct + e.adj;
+  return isFinite(out) ? out : fusedPct;
+}
+
+function renderEvo(){
+  try {
+    var rows = $('evo-rows'); if (!rows) return;
+    var html = '';
+    SYMS.forEach(function(s){
+      var e = EVO[s] || {n:0, hit:0.5, adj:0};
+      var adjTxt = (e.n < 3)
+        ? '<small style="color:#90a4ae">样本不足</small>'
+        : (Math.abs(e.adj) < 0.3)
+          ? '<small style="color:#90a4ae">已校准·中性</small>'
+          : '<b style="color:' + (e.adj < 0 ? '#1565c0' : '#c62828') + '">' + (e.adj > 0 ? '+' : '') + e.adj.toFixed(2) + '%</b>';
+      var hitTxt = (e.n >= 3) ? (e.hit * 100).toFixed(0) + '%' : '--';
+      html += '<tr><td><b>' + s + '</b></td><td class="num">' + e.n + '</td>'
+        + '<td class="num">' + hitTxt + '</td><td class="num">' + adjTxt + '</td></tr>';
+    });
+    rows.innerHTML = html;
+    var meta = $('evo-meta');
+    if (meta){
+      var tot = 0;
+      SYMS.forEach(function(s){ tot += (EVO[s] && EVO[s].n) || 0; });
+      meta.textContent = tot > 0
+        ? '📈 已用 ' + tot + ' 条真实回测样本进化预测（样本越多修正越准）'
+        : '尚未积累已结算样本——每天打开页面即自动记账，次日回填后开始进化';
+    }
   } catch(e){}
 }
 function renderBacktest(){
@@ -2616,6 +2709,7 @@ function importSamples(){
   });
   btSave(d);
   renderBacktest();
+  try { evoRefresh(); } catch(e){}   /* 导入样本后进化层立即重算 */
   if (msg){ msg.textContent = '导入成功：新增 ' + added + ' 条，更新 ' + merged + ' 条'; msg.className = 'mig-msg ok'; }
 }
 
@@ -2993,6 +3087,7 @@ if (typeof document !== 'undefined' && document.addEventListener){
     /* 打开页面即联网取价（约1.5s后），之后每5分钟自动刷新一次 */
     setTimeout(function(){ onlineRefresh(); }, 1500);
     renderBacktest();
+    try { evoRefresh(); } catch(e){}   /* 页面打开即渲染样本进化层 */
     setTimeout(function(){ recordDailySample(); }, 2400);
     setInterval(function(){ if (AUTO.on) onlineRefresh(); }, 5*60*1000);
     /* 恢复上次的视图选择 */
