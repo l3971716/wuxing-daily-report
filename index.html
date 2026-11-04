@@ -751,20 +751,20 @@ header,.energy,.note,section.zone,footer{padding-left:16px;padding-right:16px}}
 </section>
 
 <section class="bt" id="evo-sec">
-  <div class="bt-head"><h2>🧬 样本进化层（真实回测反馈）</h2>
+  <div class="bt-head"><h2>🧬 样本进化层（真实回测训练模型）</h2>
     <div class="zone-meta" id="evo-meta">正在读取已结算样本…</div></div>
   <div class="calib-note">
-    把你在<b>当前浏览器</b>里积累的真实回测样本（预测 vs 实际）反馈进模型：
-    若某个标的长期预测偏高/偏低，进化层会把该偏差<b>反向修正</b>到融合预测上。
-    样本越多、方向命中越稳，修正越可信；样本不足时不强改，避免噪声反噬。
+    把你在<b>当前浏览器</b>里积累的真实回测样本（预测 vs 实际）训练成校准模型：
+    每个标的拟合「实际 ≈ 斜率×预测＋截距」，预测时用该模型重估并反向修正。
+    样本越多、方向命中越稳，模型越可信；样本不足时不强改，避免噪声反噬。
     <span class="calib-warn">样本进化只做幅度修正，不改变五行推演方向，仍不构成投资建议。</span>
   </div>
   <div class="table-scroll"><table class="bt-table">
     <tr><th>标的</th><th class="num">已结算样本</th><th class="num">方向命中</th>
-        <th class="num">进化修正</th></tr>
+        <th class="num">模型斜率</th><th class="num">进化修正</th></tr>
     <tbody id="evo-rows"></tbody>
   </table></div>
-  <div class="calib-sub">修正量 = 反向的系统性偏差（-3% ~ +3% 封顶）。用「样本迁移」从手机导入历史样本，进化会更早生效。</div>
+  <div class="calib-sub">模型 = 近期样本加权最小二乘拟合（自动剔除异常），修正量封顶 ±3%；斜率≈1 时退化为纯偏差修正。用「样本迁移」导入历史样本，模型会更快成熟。</div>
 </section>
 
 <section class="bt">
@@ -2292,38 +2292,75 @@ function settleSamples(){
     try { evoRefresh(); } catch(e){}   /* 样本变化 → 进化层即时更新 */
   } catch(e){}
 }
-/* ========== 样本进化层（EVO）：用真实回测样本持续修正预测 ==========
+/* ========== 样本进化层（EVO）：用真实回测样本持续训练模型 ==========
  * 每次打开页面自动记录当天预测（pred），次日联网回填实际涨跌（act）。
- * 这些真实样本反映「当前模型在该浏览器的系统性偏差」。
- * 随着样本持续积累，EVO 按标的估计偏差/方向命中，把偏差反方向叠加到
- * 融合预测上——样本越多，修正越可信（样本少时保守、不强行修正）。
- * 这就是让预测随真实样本「持续进化」的一环。 */
+ * 样本越多，就越能用最小二乘拟合出该标的「实际 ≈ 斜率×预测＋截距」的
+ * 校准模型——这相当于每积累一条样本，模型就重训一次（持续进化）。
+ * 近期样本权重更高（市场风格漂移时能跟上），异常样本自动剔除；
+ * 样本少时模型保守收缩（几乎等于纯偏差平移），样本多时放开。
+ * 这就是让预测随真实样本「持续进化」的核心一环。 */
 var EVO = {}, EVO_SHOWN = false;
 
-/* 计算某标的的进化修正量（百分点）：
- *   已结算样本 → 系统性偏差 bias = mean(pred - act)
- *   修正量 = -shrink * bias，shrink 随样本数从 0.2 渐增到 0.6，样本<3 时为 0 */
+/* 训练某标的的进化校准模型（百分点）：
+ *   输入：已结算样本 (pred, act)
+ *   过程：时间衰减加权 → 异常剔除 → 加权最小二乘拟合 act ≈ a*pred + b
+ *          → 按样本数收缩（a 向 1、b 向 0 收缩）→ 计算基准修正量
+ *   样本<3 时不训练（返回保守空模型） */
 function evoBiasOf(sym){
   try {
     var d = btLoad(), recs = [];
     d.records.forEach(function(r){
       if (r.sym === sym && r.p1 != null && isFinite(r.act) && isFinite(r.pred)) recs.push(r);
     });
-    if (recs.length < 3) return {bias: 0, n: recs.length, hit: 0.5};
-    var sum = 0, hitN = 0;
+    if (recs.length < 3) return {bias: 0, a: 1, b: 0, n: recs.length, hit: 0.5, adj: 0, on: false};
+    var now = Date.now();
+    /* 1) 时间衰减权重：越近的样本越可信（半衰期约 45 天） */
+    var pts = [];
     recs.forEach(function(r){
-      sum += (r.pred - r.act);
-      if ((r.act > 0) === (r.pred > 0)) hitN++;
+      var settledTs = (typeof r.settledAt === 'number') ? r.settledAt
+                     : (typeof r.settledAt === 'string') ? Date.parse(r.settledAt)
+                     : (typeof r.d === 'string') ? Date.parse(r.d) : now;
+      if (!isFinite(settledTs)) settledTs = now;
+      var ageD = Math.max(0, (now - settledTs) / 86400000);
+      var w = Math.exp(-ageD / 45);
+      if (!isFinite(w) || w <= 0) w = 0.2;
+      pts.push({p: r.pred, a: r.act, w: w});
     });
-    var bias = sum / recs.length;
+    /* 2) 异常剔除：|误差| 超过中位数 3 倍以上或绝对值 >6 点的样本剔除 */
+    var errs = pts.map(function(x){ return Math.abs(x.p - x.a); }).sort(function(x,y){ return x - y; });
+    var med = errs[Math.floor(errs.length / 2)] || 1;
+    var lim = Math.max(3 * med, 6);
+    var good = pts.filter(function(x){ return Math.abs(x.p - x.a) <= lim; });
+    if (good.length < 3) good = pts;   /* 剔除后不足则全部使用 */
+    /* 3) 加权最小二乘：act ≈ a*pred + b */
+    var ws = 0, wx = 0, wy = 0, wxx = 0, wxy = 0;
+    good.forEach(function(x){
+      ws += x.w; wx += x.w * x.p; wy += x.w * x.a;
+      wxx += x.w * x.p * x.p; wxy += x.w * x.p * x.a;
+    });
+    var hitN = 0;
+    recs.forEach(function(r){ if ((r.act > 0) === (r.pred > 0)) hitN++; });
+    var denom = ws * wxx - wx * wx;
+    var a = (denom !== 0) ? (ws * wxy - wx * wy) / denom : 1;
+    var b = (denom !== 0) ? (wy - a * wx) / ws : 0;
+    if (!isFinite(a) || !isFinite(b)) { a = 1; b = 0; }
+    /* 4) 收缩：样本越多越相信模型，样本少时保守回退（a→1, b→0） */
+    var shrink = Math.min(0.85, Math.max(0.3, recs.length * 0.02));
+    var aUse = 1 + (a - 1) * shrink;
+    var bUse = b * shrink;
+    /* 斜率过弱/反向说明预测方向关系不可靠：只用截距修正，不放大预测 */
+    if (aUse < 0.3) aUse = 1;
+    var bias = 0;
+    recs.forEach(function(r){ bias += (r.pred - r.act); });
+    bias /= recs.length;
     var hit = hitN / recs.length;
-    /* 命中率越高，越相信模型方向，修正只调幅度不翻方向；命中率低则保守 */
-    var shrink = Math.min(0.6, 0.2 + recs.length * 0.02);
-    var adj = -bias * shrink;
-    /* 限制修正幅度，防止样本噪声过度影响（±3 个点封顶） */
+    /* 5) 基准修正量（展示用，对中位预测量级的修正） */
+    var medP = good.map(function(x){ return x.p; }).sort(function(x,y){ return x - y; });
+    var mp = medP[Math.floor(medP.length / 2)] || 0;
+    var adj = (aUse - 1) * mp + bUse;
     adj = Math.max(-3, Math.min(3, adj));
-    return {bias: bias, n: recs.length, hit: hit, adj: adj, on: true};
-  } catch(e){ return {bias: 0, n: 0, hit: 0.5, adj: 0, on: false}; }
+    return {bias: bias, a: aUse, b: bUse, n: recs.length, hit: hit, adj: adj, on: true};
+  } catch(e){ return {bias: 0, a: 1, b: 0, n: 0, hit: 0.5, adj: 0, on: false}; }
 }
 
 /* 刷新全部标的的 EVO 修正（每次打开/导入/结算后调用） */
@@ -2339,13 +2376,17 @@ function evoRefresh(){
   return changed;
 }
 
-/* 把进化修正叠加到融合预测（在 fusionApply 尾部调用）：
- *   只有样本足够（≥3）且命中率不太差时才启用，避免噪声反噬 */
+/* 把进化模型叠加到融合预测（在 fusionApply 尾部调用）：
+ *   只有样本足够（≥3）且命中率不太差时才启用，避免噪声反噬。
+ *   用训练出的校准模型 y = a*pred + b 重估预测，并限制修正幅度 ±3 点。 */
 function evoApply(sym, fusedPct){
   var e = EVO[sym];
   if (!e || !e.on) return fusedPct;
   if (e.n < 3 || e.hit < 0.4) return fusedPct;   /* 样本少/命中差：不改 */
-  var out = fusedPct + e.adj;
+  var out = e.a * fusedPct + e.b;               /* 模型重估：实际≈a×预测＋b */
+  var adj = out - fusedPct;
+  if (adj > 3) out = fusedPct + 3;              /* ±3 点封顶 */
+  if (adj < -3) out = fusedPct - 3;
   return isFinite(out) ? out : fusedPct;
 }
 
@@ -2355,7 +2396,10 @@ function renderEvo(){
     var rows = $('evo-rows'); if (!rows) return;
     var html = '';
     SYMS.forEach(function(s){
-      var e = EVO[s] || {n:0, hit:0.5, adj:0};
+      var e = EVO[s] || {n:0, hit:0.5, adj:0, a:1, b:0};
+      var modelTxt = (e.n < 3)
+        ? '<small style="color:#90a4ae">—</small>'
+        : '<b>' + e.a.toFixed(2) + '</b><small style="color:#90a4ae">×</small>';
       var adjTxt = (e.n < 3)
         ? '<small style="color:#90a4ae">样本不足</small>'
         : (Math.abs(e.adj) < 0.3)
@@ -2365,7 +2409,8 @@ function renderEvo(){
         ? (e.hit * 100).toFixed(0) + '%'
         : '--';
       html += '<tr><td><b>' + s + '</b></td><td class="num">' + e.n + '</td>'
-        + '<td class="num">' + hitTxt + '</td><td class="num">' + adjTxt + '</td></tr>';
+        + '<td class="num">' + hitTxt + '</td><td class="num">' + modelTxt + '</td>'
+        + '<td class="num">' + adjTxt + '</td></tr>';
     });
     rows.innerHTML = html;
     var meta = $('evo-meta');
@@ -2373,7 +2418,7 @@ function renderEvo(){
       var tot = 0;
       SYMS.forEach(function(s){ tot += (EVO[s] && EVO[s].n) || 0; });
       meta.textContent = tot > 0
-        ? '📈 已用 ' + tot + ' 条真实回测样本进化预测（样本越多修正越准）'
+        ? '📈 已用 ' + tot + ' 条真实回测样本训练校准模型（实际≈斜率×预测＋截距，样本越多越准）'
         : '尚未积累已结算样本——每天打开页面即自动记账，次日回填后开始进化';
     }
   } catch(e){}
