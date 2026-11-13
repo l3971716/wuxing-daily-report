@@ -711,7 +711,8 @@ header,.energy,.note,section.zone,footer{padding-left:16px;padding-right:16px}}
         <span>样本迁移（手机 ⇄ 电脑）</span><span id="mig-arrow">▾</span>
       </div>
       <div class="bt-mig-body" id="mig-body">
-        <div class="bt-mig-tip">样本存在<b>当前浏览器</b>里，换设备/浏览器不互通。同步方法：<b>手机点「导出样本」→ 复制 → 发到电脑 → 电脑打开本页点「导入样本」→ 粘贴 → 点导入</b>。</div>
+        <div class="bt-mig-tip">样本已接入<b>云端样本库</b>：每次打开本页会自动从云端拉取全部历史样本并与本地合并，手机、电脑看到的是同一套样本。<span id="cloud-sync-msg" class="mig-msg"></span></div>
+        <div class="bt-mig-tip">需要手动补录时：<b>手机点「导出样本」→ 复制 → 发到电脑 → 电脑本页点「导入样本」→ 粘贴 → 点导入</b>。</div>
         <div class="bt-mig-row">
           <button class="btn mig-btn" onclick="exportSamples()">导出样本</button>
           <button class="btn mig-btn" onclick="copySamples()">复制</button>
@@ -2724,21 +2725,10 @@ function copySamples(){
     } else { ta.select(); document.execCommand('copy'); done(); }
   } catch(e){ ta.select(); document.execCommand('copy'); done(); }
 }
-function importSamples(){
-  var ta = $('mig-ta'), msg = $('mig-msg');
-  if (!ta || !ta.value.trim()){
-    if (msg){ msg.textContent = '请先粘贴导出的样本数据'; msg.className = 'mig-msg err'; }
-    return;
-  }
-  var incoming;
-  try { incoming = JSON.parse(ta.value.trim()); } catch(e){}
-  if (!incoming || !incoming.records || !incoming.records.length){
-    if (msg){ msg.textContent = '数据格式不对，请确认完整复制'; msg.className = 'mig-msg err'; }
-    return;
-  }
-  var d = btLoad(), idx = {};
+/* 把一批样本并入本地（按 日期+标的 去重，已结算的优先保留） */
+function btMergeIncoming(incoming){
+  var d = btLoad(), idx = {}, added = 0, merged = 0;
   d.records.forEach(function(r, i){ idx[r.d + '|' + r.sym] = i; });
-  var added = 0, merged = 0;
   incoming.records.forEach(function(r2){
     if (!r2 || !r2.d || !r2.sym) return;
     var k = r2.d + '|' + r2.sym;
@@ -2751,10 +2741,53 @@ function importSamples(){
       d.records[idx[k]] = r2; merged++;
     }
   });
-  btSave(d);
-  renderBacktest();
-  try { evoRefresh(); } catch(e){}   /* 导入样本后进化层立即重算 */
-  if (msg){ msg.textContent = '导入成功：新增 ' + added + ' 条，更新 ' + merged + ' 条'; msg.className = 'mig-msg ok'; }
+  if (added || merged){
+    btSave(d);
+    try { renderBacktest(); } catch(e){}
+    try { evoRefresh(); } catch(e){}
+  }
+  return {added: added, merged: merged, total: d.records.length};
+}
+/* 云端样本库：每次打开页面自动拉取，与本地合并（手机、电脑共享同一套样本） */
+var CLOUD_SAMPLES_URL = 'https://l3971716.github.io/wuxing-daily-report/samples.json';
+function cloudSyncSamples(){
+  var msg = $('cloud-sync-msg');
+  try {
+    if (typeof fetch !== 'function') return;
+    fetch(CLOUD_SAMPLES_URL + '?v=' + Date.now(), {cache: 'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(data){
+        if (!data || !data.records || !data.records.length){
+          if (msg){ msg.textContent = '云端样本库暂不可用，已用本地样本'; msg.className = 'mig-msg err'; }
+          return;
+        }
+        var res = btMergeIncoming(data);
+        var cn = 0;
+        try { cn = btLoad().records.filter(function(r){ return r.act !== null && r.act !== undefined; }).length; } catch(e){}
+        if (msg){
+          msg.textContent = '云端已同步：本地共 ' + res.total + ' 条样本（已结算 ' + cn + ' 条）';
+          msg.className = 'mig-msg ok';
+        }
+      })
+      .catch(function(){
+        if (msg){ msg.textContent = '云端样本库暂时连不上，已用本地样本'; msg.className = 'mig-msg err'; }
+      });
+  } catch(e){}
+}
+function importSamples(){
+  var ta = $('mig-ta'), msg = $('mig-msg');
+  if (!ta || !ta.value.trim()){
+    if (msg){ msg.textContent = '请先粘贴导出的样本数据'; msg.className = 'mig-msg err'; }
+    return;
+  }
+  var incoming;
+  try { incoming = JSON.parse(ta.value.trim()); } catch(e){}
+  if (!incoming || !incoming.records || !incoming.records.length){
+    if (msg){ msg.textContent = '数据格式不对，请确认完整复制'; msg.className = 'mig-msg err'; }
+    return;
+  }
+  var res = btMergeIncoming(incoming);
+  if (msg){ msg.textContent = '导入成功：新增 ' + res.added + ' 条，更新 ' + res.merged + ' 条，本地共 ' + res.total + ' 条'; msg.className = 'mig-msg ok'; }
 }
 
 if (typeof window !== 'undefined'){
@@ -2763,6 +2796,7 @@ if (typeof window !== 'undefined'){
   window.exportSamples = exportSamples;
   window.copySamples = copySamples;
   window.importSamples = importSamples;
+  window.cloudSyncSamples = cloudSyncSamples;
   window.onlineRefresh = onlineRefresh;
   window.snapClear = snapClear;
   window.snapMarkDirty = snapMarkDirty;
@@ -3132,6 +3166,8 @@ if (typeof document !== 'undefined' && document.addEventListener){
     setTimeout(function(){ onlineRefresh(); }, 1500);
     renderBacktest();
     try { evoRefresh(); } catch(e){}   /* 页面打开即渲染样本进化层 */
+    /* 云端样本库自动同步：把手机/其他设备的历史样本并进来 */
+    try { cloudSyncSamples(); } catch(e){}
     setTimeout(function(){ recordDailySample(); }, 2400);
     setInterval(function(){ if (AUTO.on) onlineRefresh(); }, 5*60*1000);
     /* 恢复上次的视图选择 */
