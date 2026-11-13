@@ -3169,7 +3169,7 @@ if (typeof document !== 'undefined' && document.addEventListener){
     /* 云端样本库自动同步：把手机/其他设备的历史样本并进来 */
     try { cloudSyncSamples(); } catch(e){}
     setTimeout(function(){ recordDailySample(); }, 2400);
-    setInterval(function(){ if (AUTO.on) onlineRefresh(); }, 5*60*1000);
+    setInterval(function(){ if (AUTO.on) onlineRefresh(); try { cloudSyncSamples(); } catch(e){} }, 5*60*1000);
     /* 恢复上次的视图选择 */
     ['北京', '纽约', '伦敦'].forEach(function(z){
       SYMS.forEach(function(s){
