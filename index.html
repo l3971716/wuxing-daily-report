@@ -808,6 +808,7 @@ header,.energy,.note,section.zone,footer{padding-left:16px;padding-right:16px}}
           <button class="btn mig-btn" onclick="exportSamples()">导出样本</button>
           <button class="btn mig-btn" onclick="copySamples()">复制</button>
           <button class="btn mig-btn" onclick="downloadSamples()">下载样本文件</button>
+          <button class="btn mig-btn" onclick="exportMissingSamples()">补传本机新增样本</button>
         </div>
         <textarea id="mig-ta" rows="4" placeholder="导出的样本数据会显示在这里，复制后粘贴到另一台设备再导入"></textarea>
         <div class="bt-mig-row">
@@ -3468,6 +3469,35 @@ function downloadSamples(){
     if (msg){ msg.textContent = '浏览器不支持下载，请用「导出样本」+「复制」'; msg.className = 'mig-msg err'; }
   }
 }
+/* 只导出「云端没有」的样本：手机上新增的那几天，体积很小，方便直接粘贴发送 */
+function exportMissingSamples(){
+  var msg = $('mig-msg'), ta = $('mig-ta');
+  try {
+    if (typeof fetch !== 'function') return;
+    fetch(CLOUD_SAMPLES_URL + '?v=' + Date.now(), {cache: 'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(data){
+        var keys = {};
+        if (data && data.records) data.records.forEach(function(r){ keys[r.d + '|' + r.sym] = 1; });
+        var d = btLoad();
+        var miss = d.records.filter(function(r){ return !keys[r.d + '|' + r.sym]; });
+        if (!miss.length){
+          if (msg){ msg.textContent = '本机样本云端都有，无需补传'; msg.className = 'mig-msg ok'; }
+          return;
+        }
+        var txt = JSON.stringify({records: miss});
+        if (ta) ta.value = txt;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt);
+          else if (ta){ ta.select(); document.execCommand('copy'); }
+        } catch(e){}
+        if (msg){ msg.textContent = '本机比云端多 ' + miss.length + ' 条，已放进文本框并复制，直接粘贴发送即可'; msg.className = 'mig-msg ok'; }
+      })
+      .catch(function(){
+        if (msg){ msg.textContent = '云端暂时连不上，稍后再试'; msg.className = 'mig-msg err'; }
+      });
+  } catch(e){}
+}
 /* 云端样本库：每次打开页面自动拉取，与本地合并（手机、电脑共享同一套样本） */
 var CLOUD_SAMPLES_URL = 'https://l3971716.github.io/wuxing-daily-report/samples.json';
 function cloudSyncSamples(){
@@ -3517,6 +3547,7 @@ if (typeof window !== 'undefined'){
   window.copySamples = copySamples;
   window.importSamples = importSamples;
   window.downloadSamples = downloadSamples;
+  window.exportMissingSamples = exportMissingSamples;
   window.cloudSyncSamples = cloudSyncSamples;
   window.onlineRefresh = onlineRefresh;
   window.snapClear = snapClear;
