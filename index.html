@@ -807,7 +807,7 @@ header,.energy,.note,section.zone,footer{padding-left:16px;padding-right:16px}}
         <div class="bt-mig-row">
           <button class="btn mig-btn" onclick="exportSamples()">导出样本</button>
           <button class="btn mig-btn" onclick="copySamples()">复制</button>
-          <button class="btn mig-btn" onclick="downloadSamples()">下载样本文件</button>
+          <button class="btn mig-btn" onclick="exportMissing()">导出缺的样本</button>
           <button class="btn mig-btn" onclick="exportMissingSamples()">补传本机新增样本</button>
         </div>
         <textarea id="mig-ta" rows="4" placeholder="导出的样本数据会显示在这里，复制后粘贴到另一台设备再导入"></textarea>
@@ -3500,6 +3500,39 @@ function exportMissingSamples(){
 }
 /* 云端样本库：每次打开页面自动拉取，与本地合并（手机、电脑共享同一套样本） */
 var CLOUD_SAMPLES_URL = 'https://l3971716.github.io/wuxing-daily-report/samples.json';
+var __cloudRecs = null;
+function _dayStrAgo(n){
+  var t = new Date(Date.now() - n * 86400000);
+  var y = t.getFullYear(), m = t.getMonth() + 1, dd = t.getDate();
+  return y + '-' + (m < 10 ? '0' : '') + m + '-' + (dd < 10 ? '0' : '') + dd;
+}
+/* 本机有、云端没有的样本（用于把手机多出来的几天补进云端） */
+function missingLocalRecords(){
+  var d = btLoad(), cloud = __cloudRecs, out = [], ci = {};
+  if (cloud && cloud.length){
+    cloud.forEach(function(r){ if (r && r.d && r.sym) ci[r.d + '|' + r.sym] = r; });
+    d.records.forEach(function(r){
+      if (!r || !r.d || !r.sym) return;
+      var c = ci[r.d + '|' + r.sym];
+      if (!c) { out.push(r); return; }
+      if (r.settledAt && !c.settledAt) out.push(r);
+    });
+  } else {
+    var lim = _dayStrAgo(20);
+    d.records.forEach(function(r){ if (r && r.d && r.d >= lim) out.push(r); });
+  }
+  return out;
+}
+function exportMissing(){
+  var ta = $('mig-ta'), msg = $('mig-msg');
+  var list = missingLocalRecords();
+  if (!list.length){
+    if (msg){ msg.textContent = '本机没有云端缺少的样本，云端已是最全'; msg.className = 'mig-msg ok'; }
+    return;
+  }
+  if (ta) ta.value = JSON.stringify({records: list});
+  if (msg){ msg.textContent = '已生成 ' + list.length + ' 条云端缺少的样本，点「复制」发我就行'; msg.className = 'mig-msg ok'; }
+}
 function cloudSyncSamples(){
   var msg = $('cloud-sync-msg');
   try {
@@ -3511,6 +3544,7 @@ function cloudSyncSamples(){
           if (msg){ msg.textContent = '云端样本库暂不可用，已用本地样本'; msg.className = 'mig-msg err'; }
           return;
         }
+        __cloudRecs = data.records;
         var res = btMergeIncoming(data);
         var cn = 0;
         try { cn = btLoad().records.filter(function(r){ return r.act !== null && r.act !== undefined; }).length; } catch(e){}
@@ -3547,6 +3581,7 @@ if (typeof window !== 'undefined'){
   window.copySamples = copySamples;
   window.importSamples = importSamples;
   window.downloadSamples = downloadSamples;
+  window.exportMissing = exportMissing;
   window.exportMissingSamples = exportMissingSamples;
   window.cloudSyncSamples = cloudSyncSamples;
   window.onlineRefresh = onlineRefresh;
